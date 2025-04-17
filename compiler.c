@@ -24,11 +24,23 @@ enum TokenType {
     TOK_RIGHT_BRACE,
     TOK_EQ,
     TOK_SEMICOLON,
+    TOK_VARIABLE
 };
 
-const char* tok_type_string(enum TokenType type)
+struct Token {
+    enum TokenType type;
+    const char* name;
+};
+
+struct Token new_token(enum TokenType type)
 {
-    switch(type) 
+    return (struct Token) {type, 0};
+}
+
+
+const char* tok_type_string(struct Token const* token)
+{
+    switch(token->type) 
     {
         case TOK_INVALID: return "Invalid token";
         case TOK_INT: return "int";
@@ -40,12 +52,16 @@ const char* tok_type_string(enum TokenType type)
         case TOK_RIGHT_BRACE: return "}";
         case TOK_EQ: return "=";
         case TOK_SEMICOLON: return ";";
+        case TOK_VARIABLE:;
+            size_t const len1 = strlen(token->name);
+            size_t const len2 = strlen("Variable: ");
+            char* name = cc_malloc(len1 + len2 + 1);
+            char* result = strcpy(name, "Variable: ");
+            return strcat(result, token->name);
     }
+    return "Invalid token";
 }
 
-struct Token {
-    enum TokenType type;
-};
 
 struct KeywordMapElem {
     char const* string;
@@ -57,13 +73,13 @@ struct KeywordMapElem keywords_or_builtin_types[] = {
     {"return", TOK_RETURN},
 };
 
-struct Token lex_keyword(char* input_stream, size_t* position)
+struct Token lex_keyword(char const* input_stream, size_t* position)
 {
     size_t start_pos = *position;
     while (isalnum(input_stream[*position])) ++(*position);
     size_t const map_elem_count = sizeof(keywords_or_builtin_types) / sizeof(struct KeywordMapElem);
     
-    struct Token token = {TOK_INVALID};
+    struct Token token = new_token(TOK_VARIABLE);
 
     size_t keyword_size = *position - start_pos;
     for (size_t index = 0; index < map_elem_count; ++index)
@@ -77,13 +93,14 @@ struct Token lex_keyword(char* input_stream, size_t* position)
     return token;
 }
 
-struct Token* lex(char* input_stream, size_t* token_count)
+struct Token* lex(char const* input_stream, size_t* token_count)
 {
     // TODO: DYNARRAY
     struct Token* tokens = cc_malloc(100 * sizeof(struct Token));
     size_t positon = 0;
     token_count = 0;
     size_t total_length = strlen(input_stream);
+    assert(total_length > 0);
 
     while (positon < total_length)
     {
@@ -131,22 +148,16 @@ struct Token* lex(char* input_stream, size_t* token_count)
 NEW_TOK_END:
         ++positon;
         ++(*token_count);
+        assert(*token_count < 100);
     }
 
     assert(*token_count < 100);
     return tokens;
 }
 
-// Few rules first:
-//  - I actually finish it this time, hence I must go fast and dirty
-//  - Everything in the same file, because I always put too much effort into the whole 
-//  architecture 'design' while not having too many features
-//  - Read some LLVM first, especially codegen
 
-int main(int argc, char* argv[])
+char const* read_file(const char* filename)
 {
-    assert(argc == 2);
-    char* filename = argv[1];
     FILE* file = fopen(filename, "r");
     assert(file);
     
@@ -155,17 +166,31 @@ int main(int argc, char* argv[])
     rewind(file);
     char* file_content = cc_malloc(file_sz + 1);
     file_content[file_sz] = '\0';
+    fread(file_content, 1, file_sz, file);
     fclose(file);
-   
+    return file_content;
+}
+
+
+
+// Few rules first:
+//  - I actually finish it this time, hence I must go fast and dirty
+//  - Everything in the same file, because I always put too much effort into the whole 
+//  architecture 'design' while not having too many features
+int main(int argc, char* argv[])
+{
+    assert(argc == 2);
+    char const* filename = argv[1];
+    const char* file_contents = read_file(filename);
     size_t token_count = 0;
-    struct Token* tokens = lex(file_content, &token_count);
+    struct Token* tokens = lex(file_contents, &token_count);
     assert(token_count != 0 && tokens != NULL);
 
     size_t tok_index = 0;
     struct Token* current_token;
     do {
         current_token = &tokens[tok_index++];
-        printf("Token: %s\n", tok_type_string(current_token->type));
+        printf("Token: %s\n", tok_type_string(current_token));
     } while (tokens[token_count].type != TOK_INVALID);
     return 0;
 }
