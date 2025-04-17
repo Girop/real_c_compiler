@@ -39,7 +39,6 @@ struct Token new_token(enum TokenType type)
     return (struct Token) {type, 0, 0};
 }
 
-
 const char* token_to_string(struct Token const* token)
 {
     switch(token->type) 
@@ -139,6 +138,10 @@ struct Token* lex(char const* input_stream, size_t* token_count)
             struct Token* current_token = &tokens[*token_count];
             current_token->type = TOK_INT_VALUE;
             current_token->value = strtod(&input_stream[start_positon], &tmp);
+            // TODO temp fix
+            --positon;
+            ++(*token_count);
+            continue;
         }
 
         struct Token* current_token = &tokens[*token_count];
@@ -157,6 +160,7 @@ struct Token* lex(char const* input_stream, size_t* token_count)
                 current_token->type = TOK_SEMICOLON;
                 goto NEW_TOK_END;
             case '=':
+                current_token->type = TOK_EQ;
                 goto NEW_TOK_END;
             case '{':
                 current_token->type = TOK_LEFT_BRACE;
@@ -170,7 +174,6 @@ struct Token* lex(char const* input_stream, size_t* token_count)
         }
 
 NEW_TOK_END:
-        printf("Parsed: %s, positon: %zu\n", token_to_string(&tokens[*token_count]), positon);
         ++positon;
         ++(*token_count);
     }
@@ -195,6 +198,12 @@ char const* read_file(const char* filename)
     return file_content;
 }
 
+
+void parse(struct Token* tokens, size_t token_count)
+{
+
+}
+
 // Few rules first:
 //  - I actually finish it this time, hence I must go fast and dirty
 //  - Everything in the same file, because I always put too much effort into the whole 
@@ -208,10 +217,15 @@ int main(int argc, char* argv[])
     size_t token_count = 0;
     struct Token* tokens = lex(file_contents, &token_count);
     assert(token_count != 0 && tokens != NULL);
+    
 
     for (size_t idx = 0; idx < token_count; ++idx) 
     {
         printf("Token: %s\n", token_to_string(&tokens[idx]));
     }
+    
+    parse(tokens, token_count);
+
     return 0;
 }
+
