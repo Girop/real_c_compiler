@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include <ctype.h>
 #include <stdlib.h>
 
@@ -12,6 +13,31 @@ void* cc_malloc(size_t sz)
     return alloc;
 }
 
+struct StringArray {
+    char** data;
+    size_t size;
+    size_t max_capacity;
+};
+
+struct StringArray new_string_array()
+{
+    return (struct StringArray) {
+        .data = cc_malloc(8 * sizeof(char*)),
+        .size = 0,
+        .max_capacity = 8
+    };
+}
+
+void add_element(struct StringArray* arr, char const* string)
+{
+    if (arr->size + 1 > arr->max_capacity) {
+        char** new_data = realloc(arr->data, arr->max_capacity * 1.4);
+        assert(new_data);
+        arr->data = new_data;    
+    }
+    arr->data[arr->size] = strdup(string);
+    ++arr->size;
+}
 
 enum TokenType {
     TOK_INVALID = 0,
@@ -25,7 +51,7 @@ enum TokenType {
     TOK_RIGHT_BRACE,
     TOK_EQ,
     TOK_SEMICOLON,
-    TOK_VARIABLE
+    TOK_NAME
 };
 
 struct Token {
@@ -57,7 +83,7 @@ const char* token_to_string(struct Token const* token)
         case TOK_RIGHT_BRACE: return "}";
         case TOK_EQ: return "=";
         case TOK_SEMICOLON: return ";";
-        case TOK_VARIABLE:;
+        case TOK_NAME:;
             size_t const len1 = strlen(token->name);
             size_t const len2 = strlen("Variable: ");
             char* name = cc_malloc(len1 + len2 + 1);
@@ -84,7 +110,7 @@ struct Token lex_keyword(char const* input_stream, size_t* position)
     while (isalnum(input_stream[*position])) ++(*position);
     size_t const map_elem_count = sizeof(keywords_or_builtin_types) / sizeof(struct KeywordMapElem);
     
-    struct Token token = new_token(TOK_VARIABLE);
+    struct Token token = new_token(TOK_NAME);
 
     size_t keyword_size = *position - start_pos;
     --(*position);
@@ -97,7 +123,7 @@ struct Token lex_keyword(char const* input_stream, size_t* position)
         }
     }
 
-    if (token.type == TOK_VARIABLE)
+    if (token.type == TOK_NAME)
     {
         token.name = cc_malloc(keyword_size + 1);
         memcpy(token.name, &input_stream[start_pos], keyword_size);
@@ -199,9 +225,155 @@ char const* read_file(const char* filename)
 }
 
 
-void parse(struct Token* tokens, size_t token_count)
+enum ValueType 
 {
+    TYPE_INT,
+};
 
+enum StatementTag 
+{
+    TAG_DEFINITION,
+    TAG_ASSIGMENT,
+};
+
+struct ExpressionNode 
+{
+    // Much work       
+};
+
+struct ReturnNode 
+{
+    struct ExpressionNode* value;   
+};
+
+struct VariableAssignment 
+{
+    struct Token* name;
+    struct ExpressionNode* value;
+};
+
+
+struct DefineVariable 
+{
+    struct Token* name;
+    bool has_inital_value; 
+    struct ExpressionNode* value;
+};
+
+struct StatementAst 
+{
+    
+};
+
+struct FunctionAst {
+    enum ValueType return_type;
+    struct Token* name;    
+    // Body
+    struct StatementAst** statements;
+    size_t statement_count;
+};
+
+
+struct Parser {
+    size_t token_count;
+    struct Token* tokens; 
+    size_t current_position;
+    struct FunctionAst* result_ast;
+} parser;
+
+
+struct Token* current_token()
+{
+    return &parser.tokens[parser.current_position];
+}
+
+void progress_tokens()
+{
+    ++parser.current_position;
+    assert(parser.current_position <= parser.token_count);
+}
+
+void consume_expected(enum TokenType expected)
+{
+    struct Token* token = current_token();
+    if(token->type != expected) 
+    {
+        printf(
+            "Token: %s, expected type: %d, but got %d\n",
+            token_to_string(token),
+            expected, token->type);
+        exit(1);
+    }
+    progress_tokens();
+}
+
+struct Token* get_expected(enum TokenType expected)
+{
+    consume_expected(expected);
+    return &parser.tokens[parser.current_position - 1];
+}
+
+bool get_if_expected(enum TokenType expected, struct Token** res_token)
+{
+    if (current_token()->type != expected) return false;
+    assert(res_token != NULL);
+    *res_token = current_token();
+    progress_tokens();
+    return true;
+}
+
+bool consume_if_expected(enum TokenType expected)
+{
+    struct Token* token;
+    return get_if_expected(expected, &token);
+}
+
+enum ValueType parse_type()
+{
+    consume_expected(TOK_INT);
+    return TYPE_INT;
+}
+
+struct StatementAst* parse_statement()
+{
+       
+}
+
+void parse_function()
+{
+    struct Token* token = current_token();
+    struct FunctionAst* function = parser.result_ast;
+    function->return_type = parse_type();
+    function->name = get_expected(TOK_NAME);
+    consume_expected(TOK_LEFT_PAREN);
+    consume_expected(TOK_RIGHT_PAREN);
+    consume_expected(TOK_LEFT_BRACE);
+    
+    while (!consume_if_expected(TOK_RIGHT_BRACE) || parser.current_position < parser.token_count)
+    {
+        function->statements[function->statement_count] = parse_statement();
+        ++function->statement_count;
+    }
+}
+
+
+struct FunctionAst* parse(struct Token* tokens, size_t token_count)
+{
+    parser.current_position = 0;
+    parser.tokens = tokens;
+    parser.token_count = token_count;
+    parser.result_ast = cc_malloc(sizeof(struct FunctionAst));
+    parse_function();
+    return parser.result_ast;
+}
+
+void print_ast(struct FunctionAst* ast)
+{
+    printf("Parsing successful\n");
+    for (size_t idx = 0; idx < ast->statement_count; ++idx)
+    {
+        // TODO
+    }
 }
 
 // Few rules first:
@@ -223,9 +395,8 @@ int main(int argc, char* argv[])
     {
         printf("Token: %s\n", token_to_string(&tokens[idx]));
     }
-    
-    parse(tokens, token_count);
-
+    struct FunctionAst* ast = parse(tokens, token_count);
+    print_ast(ast);
     return 0;
 }
 
