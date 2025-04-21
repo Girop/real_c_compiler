@@ -84,10 +84,9 @@ const char* token_to_string(struct Token const* token)
         case TOK_EQ: return "=";
         case TOK_SEMICOLON: return ";";
         case TOK_NAME:;
-            size_t const len1 = strlen(token->name);
-            size_t const len2 = strlen("Variable: ");
-            char* name = cc_malloc(len1 + len2 + 1);
-            char* result = strcpy(name, "Variable: ");
+            const char* name_name = "Name: ";
+            char* name = cc_malloc(strlen(token->name) + strlen(name_name) + 1);
+            char* result = strcpy(name, name_name);
             return strcat(result, token->name);
     }
     return "Invalid token";
@@ -230,15 +229,30 @@ enum ValueType
     TYPE_INT,
 };
 
-enum StatementTag 
-{
-    TAG_DEFINITION,
-    TAG_ASSIGMENT,
-};
+struct BinaryExpression;
 
 struct ExpressionNode 
 {
-    // Much work       
+    enum AstExpressionType 
+    {
+        EXPR_VARIABLE,
+        EXPR_CONSTANT,
+        EXPR_BIN,
+    } type;
+    union {
+        struct BinaryExpression* bin;
+        struct Token* simple;
+    } as;
+};
+
+struct BinaryExpression
+{
+    enum BinaryOp 
+    {
+        BIN_ADD
+    } op;
+    struct ExpressionNode* left; 
+    struct ExpressionNode* right; 
 };
 
 struct ReturnNode 
@@ -252,17 +266,27 @@ struct VariableAssignment
     struct ExpressionNode* value;
 };
 
-
 struct DefineVariable 
 {
     struct Token* name;
+    enum ValueType type;
     bool has_inital_value; 
     struct ExpressionNode* value;
 };
 
 struct StatementAst 
 {
-    
+    enum StatementTag 
+    {
+        TAG_DEFINITION,
+        TAG_ASSIGMENT,
+        TAG_RETURN
+    } tag;
+    union {
+        struct DefineVariable definition;
+        struct VariableAssignment assignement;
+        struct ReturnNode ret;
+    } as;
 };
 
 struct FunctionAst {
@@ -278,7 +302,6 @@ struct Parser {
     size_t token_count;
     struct Token* tokens; 
     size_t current_position;
-    struct FunctionAst* result_ast;
 } parser;
 
 
@@ -287,10 +310,18 @@ struct Token* current_token()
     return &parser.tokens[parser.current_position];
 }
 
+
 void progress_tokens()
 {
     ++parser.current_position;
     assert(parser.current_position <= parser.token_count);
+}
+
+struct Token* consume_token()
+{
+    struct Token* token = current_token();
+    progress_tokens();
+    return token;
 }
 
 void consume_expected(enum TokenType expected)
@@ -334,26 +365,107 @@ enum ValueType parse_type()
     return TYPE_INT;
 }
 
-struct StatementAst* parse_statement()
+
+struct ExpressionNode* parse_simple_expression()
 {
-       
+    struct ExpressionNode* expr = cc_malloc(sizeof(struct ExpressionNode));
+    struct Token* matched;
+    if (get_if_expected(TOK_NAME, &matched))
+    {
+        expr->type = EXPR_VARIABLE;
+    } 
+    else if (get_if_expected(TOK_INT_VALUE, &matched))
+    {
+        expr->type = EXPR_CONSTANT;
+    }
+    assert(matched != NULL);
+    expr->as.simple = matched;
+    return expr;
 }
 
-void parse_function()
+struct ExpressionNode* parse_binary_expression()
 {
-    struct Token* token = current_token();
-    struct FunctionAst* function = parser.result_ast;
+    struct ExpressionNode* simple_expression = parse_simple_expression();
+    if (consume_if_expected(TOK_PLUS))  // Binary operators: +
+    {
+        struct BinaryExpression* binary_expr = cc_malloc(sizeof(struct BinaryExpression));
+        binary_expr->op = BIN_ADD;
+        binary_expr->left = simple_expression;
+        binary_expr->right = parse_binary_expression();
+
+        struct ExpressionNode* binar_but_expression = cc_malloc(sizeof(struct ExpressionNode));
+        binar_but_expression->type = EXPR_BIN;
+        binar_but_expression->as.bin = binary_expr;
+        return binar_but_expression;
+    }
+    return simple_expression;
+}
+
+struct ExpressionNode* parse_expression()
+{
+    struct ExpressionNode* expr = parse_binary_expression(); // Highest level of expressions in grammar
+    return expr;
+}
+
+struct StatementAst* parse_statement()
+{
+    //  For now a statement is either:
+    //  a) variable declaration (begins with type)
+    //  b) value assignement (begins with name)
+    //  c) return value (begins with return)
+    struct StatementAst* statement = cc_malloc(sizeof(struct StatementAst));
+    struct Token* matched = NULL;
+    if (get_if_expected(TOK_INT, &matched)) 
+    {
+        statement->tag = TAG_DEFINITION;
+
+        struct Token* name = get_expected(TOK_NAME);
+        statement->as.definition.name = name;
+        statement->as.definition.type = TYPE_INT;
+        if (consume_if_expected(TOK_EQ))
+        {
+            statement->as.definition.has_inital_value = true;
+            statement->as.definition.value = parse_expression();
+        } 
+        else 
+        {
+            statement->as.definition.has_inital_value = false;
+        }
+    } 
+    else if (get_if_expected(TOK_NAME, &matched)) 
+    {
+        statement->tag = TAG_ASSIGMENT; 
+        statement->as.assignement.name = matched;
+        consume_expected(TOK_EQ);
+        statement->as.assignement.value = parse_expression();
+    }
+    else if (get_if_expected(TOK_RETURN, &matched)) 
+    {
+        statement->tag = TAG_RETURN;
+        statement->as.ret.value = parse_expression();
+    }
+    assert(matched != NULL);
+    consume_expected(TOK_SEMICOLON);
+    return statement;
+}
+
+struct FunctionAst* parse_function()
+{
+    struct FunctionAst* function = cc_malloc(sizeof(struct FunctionAst));
     function->return_type = parse_type();
     function->name = get_expected(TOK_NAME);
     consume_expected(TOK_LEFT_PAREN);
     consume_expected(TOK_RIGHT_PAREN);
     consume_expected(TOK_LEFT_BRACE);
-    
+    function->statements = cc_malloc(100 * sizeof(struct StatementAst));
     while (!consume_if_expected(TOK_RIGHT_BRACE) || parser.current_position < parser.token_count)
     {
+        printf("Parsing statement nr: %d\n", (int)function->statement_count);
         function->statements[function->statement_count] = parse_statement();
         ++function->statement_count;
+        assert(function->statement_count < 100);
     }
+    return function;
 }
 
 
@@ -362,19 +474,121 @@ struct FunctionAst* parse(struct Token* tokens, size_t token_count)
     parser.current_position = 0;
     parser.tokens = tokens;
     parser.token_count = token_count;
-    parser.result_ast = cc_malloc(sizeof(struct FunctionAst));
-    parse_function();
-    return parser.result_ast;
+    return parse_function();
 }
 
-void print_ast(struct FunctionAst* ast)
+void print_depth_indicators(size_t depth)
 {
-    printf("Parsing successful\n");
-    for (size_t idx = 0; idx < ast->statement_count; ++idx)
+    for (size_t depth_idx = 0; depth_idx < depth; ++depth_idx)
     {
-        // TODO
+        printf("-");
+    }
+    printf(" ");
+}
+
+
+void print_ast_expression(struct ExpressionNode const* expr, size_t depth);
+
+void print_binary_expr(struct BinaryExpression* binary_expr, size_t depth)
+{
+    printf("Binary expression, operator: %d\n", binary_expr->op);
+
+    print_depth_indicators(depth + 1);
+    printf("Left:\n");
+    print_depth_indicators(depth + 2);
+    print_ast_expression(binary_expr->left, depth + 1);
+
+    print_depth_indicators(depth + 1);
+    printf("Right:\n");
+    print_depth_indicators(depth + 2);
+    print_ast_expression(binary_expr->right, depth + 1);
+}
+
+void print_ast_expression(struct ExpressionNode const* expr, size_t depth)
+{
+    switch (expr->type) 
+    {
+        case EXPR_VARIABLE:
+            printf("Variable: %s\n", expr->as.simple->name);
+            break;
+        case EXPR_CONSTANT:
+            printf("Constant: %d\n", expr->as.simple->value);
+            break;
+        case EXPR_BIN:
+            print_binary_expr(expr->as.bin, depth);
+            break;
     }
 }
+
+
+void print_variable_definition(struct DefineVariable const* definition, size_t depth)
+{
+    printf("New variable: %s, type: %d\n", definition->name->name, definition->type);
+    if (definition->has_inital_value)
+    {
+        print_depth_indicators(depth + 1);
+        printf("With inital value: ");
+        print_ast_expression(definition->value, depth);
+    }
+}
+
+
+void print_variable_assignment(struct VariableAssignment const* assignement, size_t depth)
+{
+    printf("Assigning to variable: %s\n", assignement->name->name);
+    if (assignement->value->type)
+    {
+        print_depth_indicators(depth + 1);
+        print_ast_expression(assignement->value, depth + 1);
+    }
+}
+
+void print_variable_return(struct ReturnNode const* ret, size_t depth)
+{
+    printf("Return\n");
+    print_depth_indicators(depth + 1);
+    print_ast_expression(ret->value, depth + 1);
+}
+
+void print_function_ast(struct FunctionAst const* ast)
+{
+    size_t depth = 0;
+    printf("Function %s:\n", ast->name->name);
+    ++depth;
+    for (size_t idx = 0; idx < ast->statement_count; ++idx)
+    {
+        print_depth_indicators(depth);
+
+        struct StatementAst* stmt = ast->statements[idx];
+        switch (stmt->tag)
+        {
+            case TAG_DEFINITION:
+                print_variable_definition(&stmt->as.definition, depth);
+                break;
+            case TAG_ASSIGMENT:
+                print_variable_assignment(&stmt->as.assignement, depth);
+                break;
+            case TAG_RETURN:
+                print_variable_return(&stmt->as.ret, depth);
+                break;
+        }
+    }
+}
+
+void print_ast(struct FunctionAst const* ast)
+{
+    printf("\nPrinting debug AST representation:\n\n");
+    print_function_ast(ast);
+}
+
+void list_tokens(struct Token const* tokens, size_t token_count)
+{
+    for (size_t idx = 0; idx < token_count; ++idx) 
+    {
+        printf("Token: %s\n", token_to_string(&tokens[idx]));
+    }
+}
+
 
 // Few rules first:
 //  - I actually finish it this time, hence I must go fast and dirty
@@ -389,12 +603,9 @@ int main(int argc, char* argv[])
     size_t token_count = 0;
     struct Token* tokens = lex(file_contents, &token_count);
     assert(token_count != 0 && tokens != NULL);
-    
 
-    for (size_t idx = 0; idx < token_count; ++idx) 
-    {
-        printf("Token: %s\n", token_to_string(&tokens[idx]));
-    }
+    // list_tokens(tokens, token_count);
+    
     struct FunctionAst* ast = parse(tokens, token_count);
     print_ast(ast);
     return 0;
