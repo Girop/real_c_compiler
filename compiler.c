@@ -784,10 +784,16 @@ void codegen_function(struct StringArray* arr, struct FunctionAst* ast)
     // add_string(arr, "ret");
 }
 
+
+
 struct StringArray codegen(struct FunctionAst* ast)
 {
     struct StringArray arr = new_string_array();
+    add_string(&arr, "section .text");
+    add_string(&arr, "global main");
+
     codegen_function(&arr, ast);
+    add_string(&arr, "\nsection .note.GNU-stack noalloc noexec nowrite progbits"); // security note
     return arr;
 }
 
