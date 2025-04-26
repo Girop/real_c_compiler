@@ -1,3 +1,4 @@
+#include <stdarg.h>
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,10 +29,11 @@ struct StringArray new_string_array()
     };
 }
 
-void add_element(struct StringArray* arr, char const* string)
+void add_string(struct StringArray* arr, char const* string)
 {
     if (arr->size + 1 > arr->max_capacity) {
-        char** new_data = realloc(arr->data, arr->max_capacity * 1.4);
+        arr->max_capacity *= 1.4; 
+        char** new_data = realloc(arr->data, arr->max_capacity);
         assert(new_data);
         arr->data = new_data;    
     }
@@ -434,9 +436,9 @@ struct StatementAst* parse_statement()
     } 
     else if (get_if_expected(TOK_NAME, &matched)) 
     {
+        consume_expected(TOK_EQ);
         statement->tag = TAG_ASSIGMENT; 
         statement->as.assignement.name = matched;
-        consume_expected(TOK_EQ);
         statement->as.assignement.value = parse_expression();
     }
     else if (get_if_expected(TOK_RETURN, &matched)) 
@@ -489,9 +491,14 @@ void print_depth_indicators(size_t depth)
 
 void print_ast_expression(struct ExpressionNode const* expr, size_t depth);
 
+
+char const* OPERATOR_REPR[] = {
+    [BIN_ADD] = "+"
+};
+
 void print_binary_expr(struct BinaryExpression* binary_expr, size_t depth)
 {
-    printf("Binary expression, operator: %d\n", binary_expr->op);
+    printf("Binary expression, operator: %s\n", OPERATOR_REPR[binary_expr->op]);
 
     print_depth_indicators(depth + 1);
     printf("Left:\n");
@@ -577,7 +584,7 @@ void print_function_ast(struct FunctionAst const* ast)
 
 void print_ast(struct FunctionAst const* ast)
 {
-    printf("\nPrinting debug AST representation:\n\n");
+    printf("\nPrinting debug AST representation\n\n");
     print_function_ast(ast);
 }
 
@@ -589,11 +596,221 @@ void list_tokens(struct Token const* tokens, size_t token_count)
     }
 }
 
+__attribute__((format(printf, 1, 2)))
+char* format(char const* format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    size_t const size = vsnprintf(NULL, 0, format, args) + 1;
+    va_end(args);
+
+    assert(size > 1);
+    char* message = cc_malloc(size);
+    va_start(args, format);
+    vsnprintf(message, size, format, args);
+    va_end(args);
+    return message;
+}
+
+#define TABLE_SIZE 1024
+
+struct VariableInTable 
+{
+    bool is_set;
+    char const* name;
+    enum ValueType type;
+    size_t stack_offset;
+};
+
+struct SymbolTable 
+{
+    struct VariableInTable variables[TABLE_SIZE];
+} table = {0};
+
+
+size_t get_type_size(enum ValueType type)
+{
+    assert(type == TYPE_INT);
+    return sizeof(int);
+}
+
+size_t calculate_stack_offset(size_t new_symbol_pos)
+{
+    size_t offset = 0;
+    for (size_t idx = 0; idx < new_symbol_pos; ++idx)
+    {
+        offset += get_type_size(table.variables[idx].type);
+    }
+    return offset;
+}
+
+
+void add_variable_to_table(char const* name, enum ValueType type)
+{
+    assert(type == TYPE_INT);
+    for (size_t idx = 0; idx < TABLE_SIZE; ++idx)
+    {
+        struct VariableInTable* var = &table.variables[idx];
+        if (!var->is_set)
+        {
+            var->is_set = true;
+            var->name = strdup(name);
+            var->type = type;
+            var->stack_offset = calculate_stack_offset(idx) + get_type_size(var->type);
+            break;
+        }
+        else if (strcmp(var->name, name) == 0) 
+        {
+            printf("Symbol %s redefintion\n", name);
+            exit(1);
+        }
+    }
+}
+
+struct VariableInTable* find_symbol(char const* name)
+{
+    struct VariableInTable* symbol = NULL;
+    for (size_t idx = 0; idx < TABLE_SIZE; ++idx)
+    {
+        if (strcmp(table.variables[idx].name, name) == 0)
+        {
+            symbol = &table.variables[idx];
+            break;
+        }
+    }
+    assert(symbol != NULL);
+    return symbol;
+}
+
+char const* variable_location(char const* name)
+{
+    struct VariableInTable* symbol = find_symbol(name);
+    return format("dword [rbp - %d]", (int)symbol->stack_offset);
+}
+
+void read_variable_into_eax(struct StringArray* arr, char const* variable_name)
+{
+    char const* location = variable_location(variable_name);
+    add_string(arr, format("mov eax, %s", location));
+}
+
+void on_expression(struct StringArray* arr, struct ExpressionNode* expre);
+
+
+char const* binary_op_instructions[] = {
+    [BIN_ADD] = "add",
+};
+
+void on_binary_expression(struct StringArray* arr, struct BinaryExpression* expr)
+{
+    char const* op = binary_op_instructions[expr->op];
+    on_expression(arr, expr->right);
+    add_string(arr, "mov rdi, rax");
+    on_expression(arr, expr->left);
+    add_string(arr, format("%s rax, rdi", op));
+}
+
+// put result in eax
+void on_expression(struct StringArray* arr, struct ExpressionNode* expre)
+{
+    switch(expre->type)
+    {
+        case EXPR_CONSTANT: 
+        {
+            struct Token* token = expre->as.simple;
+            add_string(arr, format("mov eax, %d", token->value));
+            break;
+        }
+        case EXPR_VARIABLE: 
+        {
+            struct Token* token = expre->as.simple;
+            add_string(arr, format("mov eax, %s", variable_location(token->name)));
+            break;
+        }
+        case EXPR_BIN: 
+        {
+            on_binary_expression(arr, expre->as.bin);
+            break;
+        }
+    }
+}
+
+
+void on_definition(struct StringArray* arr, struct DefineVariable* definition)
+{
+    char const* new_var_name = definition->name->name;
+    add_variable_to_table(new_var_name, definition->type);
+    if (definition->has_inital_value) 
+    {
+        on_expression(arr, definition->value);
+        add_string(arr, format("mov %s, eax", variable_location(new_var_name)));
+    }
+}
+
+void on_assignment(struct StringArray* arr, struct VariableAssignment* asgn)
+{
+    on_expression(arr, asgn->value);
+    char const* name = asgn->name->name;
+    add_string(arr, format("mov %s, eax", variable_location(name)));
+}
+
+void on_return(struct StringArray* arr, struct ReturnNode* ret)
+{
+    on_expression(arr, ret->value);
+    add_string(arr, "ret");
+}
+
+void codegen_function(struct StringArray* arr, struct FunctionAst* ast)
+{
+    // Ignoring the return value for now, assume all the world is built upon ints
+    // Function name:
+    char* res = format("%s:", ast->name->name);
+    add_string(arr, res); 
+
+    add_string(arr, "push rbp");
+    add_string(arr, "mov rbp, rsp");
+    
+    for (size_t idx = 0; idx < ast->statement_count; ++idx)
+    {
+        struct StatementAst* stmt = ast->statements[idx];
+        switch(ast->statements[idx]->tag)
+        {
+            case TAG_ASSIGMENT:
+                on_assignment(arr, &stmt->as.assignement);
+                break;
+            case TAG_DEFINITION:
+                on_definition(arr, &stmt->as.definition);
+                break;
+            case TAG_RETURN:
+                on_return(arr, &stmt->as.ret);
+                break;
+        }
+    }
+    add_string(arr, "pop rbp");
+    add_string(arr, "ret");
+}
+
+struct StringArray codegen(struct FunctionAst* ast)
+{
+    struct StringArray arr = new_string_array();
+    codegen_function(&arr, ast);
+    return arr;
+}
+
+void show_assembly(struct StringArray const* assembly)
+{
+    printf("Generated asm: \n");
+    for (size_t idx = 0; idx < assembly->size; ++idx)
+    {
+        printf("%s\n", assembly->data[idx]);
+    }
+}
 
 // Few rules first:
 //  - I actually finish it this time, hence I must go fast and dirty
 //  - Everything in the same file, because I always put too much effort into the whole 
 //  architecture 'design' while not having too many features
+//  - Don't be afraid to be over-explicit in the AST design
 int main(int argc, char* argv[])
 {
     assert(argc == 2);
@@ -604,10 +821,12 @@ int main(int argc, char* argv[])
     struct Token* tokens = lex(file_contents, &token_count);
     assert(token_count != 0 && tokens != NULL);
 
-    // list_tokens(tokens, token_count);
+    list_tokens(tokens, token_count);
     
     struct FunctionAst* ast = parse(tokens, token_count);
     print_ast(ast);
+    struct StringArray arr = codegen(ast);
+    show_assembly(&arr);
     return 0;
 }
 
