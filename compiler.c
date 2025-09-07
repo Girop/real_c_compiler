@@ -34,9 +34,8 @@ void add_string(struct StringArray* arr, char const* string)
 {
     if (arr->size + 1 > arr->max_capacity) {
         arr->max_capacity *= 1.4; 
-        char** new_data = realloc(arr->data, arr->max_capacity * sizeof(char*));
-        assert(new_data);
-        arr->data = new_data;    
+        arr->data = realloc(arr->data, arr->max_capacity * sizeof(char*));
+        assert(arr->data);
     }
     arr->data[arr->size] = strdup(string);
     ++arr->size;
@@ -158,6 +157,22 @@ int32_t* hashmap_find(struct HashMap* map, const char* key)
 
 // void hashmap_erase(struct HashMap* map, const char* key);
 
+__attribute__((format(printf, 1, 2)))
+char* format(char const* format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    size_t const size = vsnprintf(NULL, 0, format, args) + 1;
+    va_end(args);
+
+    assert(size > 1);
+    char* message = cc_malloc(size);
+    va_start(args, format);
+    vsnprintf(message, size, format, args);
+    va_end(args);
+    return message;
+}
+
 enum TokenType {
     TOK_INVALID = 0,
     TOK_INT,
@@ -190,10 +205,7 @@ const char* token_to_string(struct Token const* token)
     {
         case TOK_INVALID: return "INVALID TOKEN";
         case TOK_INT: return "int";
-        case TOK_INT_VALUE:;
-            char* buffer = cc_malloc(100);
-            sprintf(buffer, "%d", token->value);
-            return buffer;
+        case TOK_INT_VALUE: return format("%d", token->value);
         case TOK_RETURN: return "return";
         case TOK_PLUS: return "+";
         case TOK_LEFT_PAREN: return "(";
@@ -202,11 +214,7 @@ const char* token_to_string(struct Token const* token)
         case TOK_RIGHT_BRACE: return "}";
         case TOK_EQ: return "=";
         case TOK_SEMICOLON: return ";";
-        case TOK_NAME:;
-            const char* name_name = "Name: ";
-            char* name = cc_malloc(strlen(token->name) + strlen(name_name) + 1);
-            char* result = strcpy(name, name_name);
-            return strcat(result, token->name);
+        case TOK_NAME: return format("Name: %s", token->name);
     }
     return "Invalid token";
 }
@@ -579,7 +587,6 @@ struct FunctionAst* parse_function()
     function->statements = cc_malloc(100 * sizeof(struct StatementAst));
     while (!consume_if_expected(TOK_RIGHT_BRACE) || parser.current_position < parser.token_count)
     {
-        printf("Parsing statement nr: %d\n", (int)function->statement_count);
         function->statements[function->statement_count] = parse_statement();
         ++function->statement_count;
         assert(function->statement_count < 100);
@@ -713,21 +720,6 @@ void list_tokens(struct Token const* tokens, size_t token_count)
     }
 }
 
-__attribute__((format(printf, 1, 2)))
-char* format(char const* format, ...)
-{
-    va_list args;
-    va_start(args, format);
-    size_t const size = vsnprintf(NULL, 0, format, args) + 1;
-    va_end(args);
-
-    assert(size > 1);
-    char* message = cc_malloc(size);
-    va_start(args, format);
-    vsnprintf(message, size, format, args);
-    va_end(args);
-    return message;
-}
 
 #define TABLE_SIZE 1024
 
@@ -874,6 +866,7 @@ void on_assignment(struct StringArray* arr, struct VariableAssignment* asgn)
 void on_return(struct StringArray* arr, struct ReturnNode* ret)
 {
     on_expression(arr, ret->value);
+    add_string(arr, "pop rbp");
     add_string(arr, "ret");
 }
 
@@ -903,20 +896,26 @@ void codegen_function(struct StringArray* arr, struct FunctionAst* ast)
                 break;
         }
     }
-    add_string(arr, "pop rbp");
-    add_string(arr, "ret");
+    // Functions must contain explicit return
+    // add_string(arr, "pop rbp");
+    // add_string(arr, "ret");
 }
+
+
 
 struct StringArray codegen(struct FunctionAst* ast)
 {
     struct StringArray arr = new_string_array();
+    add_string(&arr, "section .text");
+    add_string(&arr, "global main");
+
     codegen_function(&arr, ast);
+    add_string(&arr, "\nsection .note.GNU-stack noalloc noexec nowrite progbits"); // security note
     return arr;
 }
 
 void show_assembly(struct StringArray const* assembly)
 {
-    printf("Generated asm: \n");
     for (size_t idx = 0; idx < assembly->size; ++idx)
     {
         printf("%s\n", assembly->data[idx]);
@@ -1161,26 +1160,62 @@ void print_tape(struct VirtualMachineCode const* vm)
 // - UTs for general data structures too
 // - Bytecode based tests for compilation part
 // - Collection of small sample programs 
+struct InputFlags
+{
+    bool show_tokens;  
+    bool show_ast;
+    bool print_asm;
+    char const* filename;
+};
+
+struct InputFlags handle_arguments(int argc, char** argv)
+{
+    struct InputFlags flags = {0};
+    assert(argc >= 2 && "Missing input file");
+    flags.filename = argv[1];
+
+    for (int arg_idx = 1; arg_idx < argc; ++arg_idx)
+    {
+        if (strcmp(argv[arg_idx], "-t") == 0)
+        {
+            flags.show_tokens = true;    
+        } 
+        else if (strcmp(argv[arg_idx], "-a") == 0)
+        {
+            flags.show_ast = true;
+        } 
+    }
+    return flags;
+}
+
 int main(int argc, char* argv[])
 {
-    assert(argc == 2);
-    char const* filename = argv[1];
-    const char* file_contents = read_file(filename);
+    struct InputFlags options = handle_arguments(argc, argv);
+    const char* file_contents = read_file(options.filename);
 
     size_t token_count = 0;
     struct Token* tokens = lex(file_contents, &token_count);
     assert(token_count != 0 && tokens != NULL);
 
-    list_tokens(tokens, token_count);
+    if (options.show_tokens) 
+    {
+        list_tokens(tokens, token_count);
+    }
     
     struct FunctionAst* ast = parse(tokens, token_count);
     print_ast(ast);
 
     struct VirtualMachineCode vm = compile_to_vm(ast);
     print_tape(&vm);
-
+    return 0;
     // struct StringArray arr = codegen(ast);
     // show_assembly(&arr);
+    if (options.print_asm) 
+    {
+        print_ast(ast);
+    }
+    struct StringArray arr = codegen(ast);
+    show_assembly(&arr);
     return 0;
 }
 
