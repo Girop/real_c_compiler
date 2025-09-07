@@ -1,11 +1,11 @@
 #include <stdarg.h>
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include <ctype.h>
 #include <stdlib.h>
-
 
 void* cc_malloc(size_t sz)
 {
@@ -14,7 +14,8 @@ void* cc_malloc(size_t sz)
     return alloc;
 }
 
-struct StringArray {
+struct StringArray 
+{
     char** data;
     size_t size;
     size_t max_capacity;
@@ -33,13 +34,129 @@ void add_string(struct StringArray* arr, char const* string)
 {
     if (arr->size + 1 > arr->max_capacity) {
         arr->max_capacity *= 1.4; 
-        char** new_data = realloc(arr->data, arr->max_capacity);
+        char** new_data = realloc(arr->data, arr->max_capacity * sizeof(char*));
         assert(new_data);
         arr->data = new_data;    
     }
     arr->data[arr->size] = strdup(string);
     ++arr->size;
 }
+
+#define DEFINE_NEW_DYN_ARRAY(ARRAY_NAME, TYPE, NEW_FUNC_NAME, ADD_FUNC_NAME) \
+struct ARRAY_NAME  \
+{ \
+    TYPE* data; \
+    size_t size; \
+    size_t max_capacity; \
+}; \
+struct ARRAY_NAME NEW_FUNC_NAME() \
+{  \
+    return (struct ARRAY_NAME) { \
+        .data = cc_malloc(8 * sizeof(TYPE)), \
+        .size = 0, \
+        .max_capacity = 8 \
+    }; \
+} \
+void ADD_FUNC_NAME(struct ARRAY_NAME* arr, TYPE const* value) \
+{ \
+    if (arr->size + 1 > arr->max_capacity) { \
+        arr->max_capacity *= 1.4;  \
+        TYPE* new_data = realloc(arr->data, arr->max_capacity * sizeof(TYPE)); \
+        assert(new_data); \
+        arr->data = new_data; \
+    } \
+    arr->data[arr->size] = *value; \
+    ++arr->size; \
+}
+
+// Hashing function implemantions from: https://stackoverflow.com/questions/7666509/hash-function-for-string
+uint32_t murmurOAAT32(const char* key)
+{
+  uint32_t h = 3323198485ul;
+  for (;*key;++key) {
+    h ^= *key;
+    h *= 0x5bd1e995;
+    h ^= h >> 15;
+  }
+  return h;
+}
+
+uint64_t murmurOAAT64(const char* key)
+{
+  uint64_t h = 525201411107845655ull;
+  for (;*key;++key) {
+    h ^= *key;
+    h *= 0x5bd1e9955bd1e995;
+    h ^= h >> 47;
+  }
+  return h;
+}
+
+struct HashmapElem
+{
+    const char* key;
+    int32_t value;
+};
+
+struct HashMap
+{
+    struct HashmapElem* data;
+    size_t capacity;
+    size_t size;
+};
+
+void hashmap_init(struct HashMap* map)
+{
+    map->capacity = 32;
+    map->size = 0;
+    map->data = cc_malloc(32 * sizeof(struct HashmapElem));
+}
+
+static void reallocate_hashmap(struct HashMap* map, size_t new_capacity)
+{
+    struct HashmapElem* new_data = cc_malloc(new_capacity * sizeof(struct HashmapElem));
+    for (size_t idx = 0; idx < map->capacity; ++idx)
+    {
+        struct HashmapElem* item = &map->data[idx];
+        if (item->key == NULL) continue;
+        size_t new_index = murmurOAAT32(item->key) % new_capacity;
+        while (new_data[new_index].key != NULL) new_index = (new_index + 1) % new_capacity;
+        new_data[new_index] = *item;
+    }
+    free(map->data);
+    map->data = new_data;
+    map->capacity = new_capacity;
+}
+
+void hashmap_insert(struct HashMap* map, const char* key, int32_t value) 
+{
+    float load_factor = (float) map->size / map->capacity;
+    if (load_factor > 0.7)
+    {
+        reallocate_hashmap(map, map->size * 1.4);
+    }
+    size_t index = murmurOAAT32(key) % map->capacity;
+    while (map->data[index].key == NULL) index = (index + 1) % map->capacity;
+    map->data[index] = (struct HashmapElem){ .key = strdup(key), .value = value};
+}
+
+// May return null
+int32_t* hashmap_find(struct HashMap* map, const char* key)
+{
+    size_t index = murmurOAAT32(key) % map->capacity;
+    while (map->data[index].key != NULL)
+    {
+        struct HashmapElem* elem = &map->data[index];
+        if (strcmp(elem->key, key) == 0)
+        {
+            return &elem->value;
+        }
+        index = (index + 1) % map->capacity;
+    }
+    return NULL;
+}
+
+// void hashmap_erase(struct HashMap* map, const char* key);
 
 enum TokenType {
     TOK_INVALID = 0,
@@ -806,11 +923,244 @@ void show_assembly(struct StringArray const* assembly)
     }
 }
 
+
+// SSA as simplification:
+// I want to introduce a intermediate representation very early, since
+// a) as a way to decrease the number of types of operations
+// b) and I want to perform codegen optimizations anyway
+// OR 
+// I could also produce bytecode with minimal instruction (with type tags) set for a hypothetical stack machine,
+// and then, convert it to the specific architecture.
+
+
+enum BytecodeOp
+{
+    // Data movement
+    PUSH, // Uses second operand as literal
+    POP, // decrement stack
+    LOAD, // Treat next value in ins tape as locaiton at push unerlying value on the stack
+    STORE, // Target location as next instruction, value on the stack 
+    // Data transformation
+    // Consume first element and:
+    NOT, // logical negation 
+    // Consume top 2 stack elements and:
+    ADD, // adds
+    SUB, // subtracts
+    MUL, // multiplies
+    DIV, // divides 
+    REM, // calculates modulo of first by second
+    LSHIFT, // shifts first number left by second
+    RSHIFT, // shifts first number right by second
+        //  Not supported yet instructions
+    // Flow
+    // CMP, 
+    // JMP,
+    // JE,
+    // JNE,
+    // JG,
+    // JL,
+    CALL,
+    RET
+};
+
+char const* op_to_string(enum BytecodeOp op)
+{
+    switch (op)
+    {
+        case PUSH: return "PUSH";
+        case POP: return "POP";
+        case LOAD: return "LOAD";
+        case STORE: return "STORE";
+        case NOT: return "NOT";
+        case ADD: return "ADD";
+        case SUB: return "SUB";
+        case MUL: return "MUL";
+        case DIV: return "DIV";
+        case REM: return "REM";
+        case LSHIFT: return "LSHIFT";
+        case RSHIFT: return "RSHIFT";
+        case CALL: return "CALL";
+        case RET: return "RET";
+    }
+    return "<UNDEFINED>";
+}
+
+struct Local 
+{
+    const char* name;
+    size_t depth;
+};
+
+union Bytecode
+{
+    enum BytecodeOp op;
+    int value; 
+};
+
+DEFINE_NEW_DYN_ARRAY(Tape, union Bytecode, new_tape, add_to_tape)
+
+struct VirtualMachineCode
+{
+    const char* symbol;
+    struct Tape tape; 
+    size_t stack_top;
+    int32_t current_offset;
+    // TODO Scoping rules... + split it up into actuall offstet map and a variable table with variable information
+    struct HashMap stack_offsets;
+};
+
+
+void push_ins(struct VirtualMachineCode* vm, enum BytecodeOp op)
+{
+    union Bytecode code;
+    code.op = op;
+    add_to_tape(&vm->tape, &code);
+}
+
+void push_constant(struct VirtualMachineCode* vm, int value)
+{
+    union Bytecode code;
+    code.value = value;
+    add_to_tape(&vm->tape, &code);
+}
+
+void compile_expression(struct VirtualMachineCode* vm, struct ExpressionNode const* expr);
+
+void compile_binary_expression(struct VirtualMachineCode* vm, struct BinaryExpression const* expr)
+{
+    switch (expr->op)
+    {
+        case BIN_ADD:
+            compile_expression(vm, expr->left);
+            compile_expression(vm, expr->right);
+            push_ins(vm, ADD);
+            break;
+    }
+}
+
+void compile_expression(struct VirtualMachineCode* vm, struct ExpressionNode const* expr)
+{
+    switch (expr->type) 
+    {
+        case EXPR_CONSTANT:
+            push_ins(vm, PUSH);
+            push_constant(vm, expr->as.simple->value);
+            break;
+        case EXPR_VARIABLE:
+            int32_t* var = hashmap_find(&vm->stack_offsets, expr->as.simple->name);
+            if (var == NULL)
+            {
+                printf("Usage of undefined variable: %s\n", expr->as.simple->name);
+                exit(1);
+            }
+            push_ins(vm, LOAD);
+            push_constant(vm, *var);
+            break;
+        case EXPR_BIN:
+            compile_binary_expression(vm, expr->as.bin);
+            break;
+    }
+}
+
+void compile_assignment(struct VirtualMachineCode* vm, struct VariableAssignment const* assign)
+{
+    int32_t* var = hashmap_find(&vm->stack_offsets, assign->name->name);
+    if (var == NULL)
+    {
+        printf("Usage of undefined variable: %s\n", assign->name->name);
+        exit(1);
+    }
+    compile_expression(vm, assign->value);
+    push_ins(vm, STORE);
+    push_constant(vm, *var);
+}
+
+void compile_var_definition(struct VirtualMachineCode* vm, struct DefineVariable const* def)
+{
+    int32_t* elem = hashmap_find(&vm->stack_offsets, def->name->name);
+    if (elem != NULL)
+    {
+        printf("Variable shadowing is not supported yet\n");
+        exit(1);
+    }
+
+    size_t var_offset = vm->current_offset;
+    hashmap_insert(&vm->stack_offsets, def->name->name, vm->current_offset);
+    vm->current_offset += get_type_size(def->type);
+    if (def->has_inital_value)
+    {
+        compile_expression(vm, def->value);
+        push_ins(vm, STORE);
+        push_constant(vm, var_offset);
+    }
+}
+
+void compile_return(struct VirtualMachineCode* vm, struct ReturnNode const* ret)
+{
+    compile_expression(vm, ret->value);
+    push_ins(vm, RET);
+}
+
+struct VirtualMachineCode compile_to_vm(struct FunctionAst const* ast)
+{
+    struct VirtualMachineCode vm;
+    vm.symbol = ast->name->name;
+    vm.current_offset = 0;
+    hashmap_init(&vm.stack_offsets);
+
+    assert(ast->return_type == TYPE_INT && "Supported only INTs");
+    
+    for (size_t stmt_idx = 0; stmt_idx < ast->statement_count; ++stmt_idx)
+    {
+        struct StatementAst const* stmt = ast->statements[stmt_idx];
+        switch(stmt->tag)
+        {
+            case TAG_DEFINITION:
+                compile_var_definition(&vm, &stmt->as.definition);
+                break;
+            case TAG_ASSIGMENT:
+                compile_assignment(&vm, &stmt->as.assignement);
+                break;
+            case TAG_RETURN:
+                compile_return(&vm, &stmt->as.ret);
+                break;
+        }
+    }
+    return vm;
+}
+
+bool is_op_double_width(enum BytecodeOp op)
+{
+    return op == LOAD || op == STORE || op == PUSH;
+}
+
+void print_tape(struct VirtualMachineCode const* vm)
+{
+    printf("%s:\n", vm->symbol);
+    for (size_t idx = 0; idx < vm->tape.size; ++idx)
+    {
+        union Bytecode byte = vm->tape.data[idx];
+        printf("\t%s ", op_to_string(byte.op));
+        if (is_op_double_width(byte.op))
+        {
+            printf("%d", vm->tape.data[++idx].value);
+        }
+        printf("\n");
+    }
+}
+
+
 // Few rules first:
 //  - I actually finish it this time, hence I must go fast and dirty
 //  - Everything in the same file, because I always put too much effort into the whole 
 //  architecture 'design' while not having too many features
 //  - Don't be afraid to be over-explicit in the AST design
+
+// Testing ideas:
+// - UTs for AST seem plausible
+// - UTs for general data structures too
+// - Bytecode based tests for compilation part
+// - Collection of small sample programs 
 int main(int argc, char* argv[])
 {
     assert(argc == 2);
@@ -825,8 +1175,12 @@ int main(int argc, char* argv[])
     
     struct FunctionAst* ast = parse(tokens, token_count);
     print_ast(ast);
-    struct StringArray arr = codegen(ast);
-    show_assembly(&arr);
+
+    struct VirtualMachineCode vm = compile_to_vm(ast);
+    print_tape(&vm);
+
+    // struct StringArray arr = codegen(ast);
+    // show_assembly(&arr);
     return 0;
 }
 
